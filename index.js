@@ -100,8 +100,8 @@ app.post('/api/newsletter/subscribe', async (req, res) => {
   }
 });
 
-app.get('/api/lessons', async(req,res)=>{
-  try{
+app.get('/api/lessons', async (req, res) => {
+  try {
     const {
       search = '',
       category = '',
@@ -109,56 +109,86 @@ app.get('/api/lessons', async(req,res)=>{
       sortBy = 'newest',
       page = 1,
       limit = 6
-    }= req.query;
-     const query = {visibility : 'Public'};
-     if(search){
-      query.$or =[
-        {title: {$regex: search, $options: 'i'}},
-        {description: {$regex: search, $options: 'i'}}
+    } = req.query;
+
+    // 1. Base Query Filters
+    const query = { visibility: 'Public' };
+    if (search) {
+      query.$or = [
+        { title: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } }
       ];
-     }
-     if(category){
+    }
+    if (category) {
       query.category = category;
-     }
-     if(emotionalTone){
+    }
+    if (emotionalTone) {
       query.emotionalTone = emotionalTone;
-     }
-     let sortOptions = {};
-     if(sortBy === 'most-saved'){
-      sortOptions = {likesCount : -1};
-     }else{
-      sortOptions = {_id : -1};
-     }
-     //Pagination - How much to skip
-     const pageNumber = parseInt(page);
-     const limitNumber = parseInt(limit);
-     const skip = (pageNumber-1) * limitNumber;
+    }
 
-     const lessonCollection = db.collection('lessons');
+    // 2. Math Calculation for Pagination Offset
+    const pageNumber = parseInt(page);
+    const limitNumber = parseInt(limit);
+    const skip = (pageNumber - 1) * limitNumber;
 
-     //fetch Filtered Items
-     const lessons = await lessonCollection.find(query).sort(sortOptions).skip(skip).limit(limitNumber).toArray();
+    const lessonCollection = db.collection('lessons');
 
-     //Fetch Total Matching for frontend pagination control
-     const totalLessons = await lessonCollection.countDocuments(query);
-     const totalPages = Math.ceil(totalLessons / limitNumber);
+    // 3. Build the Aggregation Pipeline
+    let pipeline = [
+      { $match: query } // Step A: Apply search parameters and filtering rules first
+    ];
 
-     res.json({
-       lessons,
-       pagination: {
-         totalLessons,
-         totalPages,
-         currentPage: pageNumber,
-         limit: limitNumber
-       }
-     });
-  }
- 
-  catch(err){
-    console.log(err);
+    if (sortBy === 'most-saved') {
+      pipeline.push(
+        {
+          $lookup: {
+            from: 'favorites',          // Look into your 'favorites' collection
+            localField: '_id',          // Take the lesson ID (stored as string or objectId depending on your mapping)
+            foreignField: 'lessonId',   // Match it with the lessonId key in favorites
+            as: 'savedRecords'          // Store matches inside an array named 'savedRecords'
+          }
+        },
+        {
+          $addFields: {
+            savedCount: { $size: '$savedRecords' } // Count the exact amount of saves dynamically
+          }
+        },
+        { $sort: { savedCount: -1 } }   // Sort descending (highest bookmarked entries first)
+      );
+    } else {
+      // Default fallback ordering: Newest items first
+      pipeline.push({ $sort: { _id: -1 } });
+    }
+
+    // Step C: Apply Pagination slices onto the final structured pipeline
+    pipeline.push(
+      { $skip: skip },
+      { $limit: limitNumber }
+    );
+
+    // 4. Fetch Results from the Aggregate Pipeline Execution
+    const lessons = await lessonCollection.aggregate(pipeline).toArray();
+
+    // 5. Total Matching Metadata Calculations for Front-End Pagination UI State Control
+    const totalLessons = await lessonCollection.countDocuments(query);
+    const totalPages = Math.ceil(totalLessons / limitNumber);
+
+    // 6. Finalized JSON Output Structure matching your requirements
+    res.json({
+      lessons,
+      pagination: {
+        totalLessons,
+        totalPages,
+        currentPage: pageNumber,
+        limit: limitNumber
+      }
+    });
+
+  } catch (err) {
+    console.error('Error fetching lessons:', err);
     res.status(500).json({ error: 'Internal Server Error' });
   }
-})
+});
 app.post('/api/lessons', async (req, res) => {
   try {
     const { title, description, category, emotionalTone, visibility, accessLevel, creatorId } = req.body;
@@ -367,6 +397,298 @@ app.patch('/api/lessons/:id/like', async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+// POST /api/reports
+app.post('/api/reports', async (req, res) => {
+  try {
+    const { lessonId, reporterUserId, reportedUserEmail, reason } = req.body;
+
+    if (!lessonId || !reporterUserId || !reportedUserEmail || !reason) {
+      return res.status(400).json({ success: false, message: 'Missing required report details.' });
+    }
+
+    const newReport = {
+      lessonId: new ObjectId(lessonId),
+      reporterUserId,
+      reportedUserEmail,
+      reason, // e.g., "Inappropriate Content", "Harassment", "Spam"
+      timestamp: new Date()
+    };
+
+    const result = await db.collection('lessonsReports').insertOne(newReport);
+
+    res.status(201).json({
+      success: true,
+      message: 'Lesson has been flagged and submitted for admin review.',
+      reportId: result.insertedId
+    });
+
+  } catch (error) {
+    console.error('Error creating report:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+// POST /api/lessons/:id/comments
+app.post('/api/lessons/:id/comments', async (req, res) => {
+  try {
+    const { id } = req.params; // Lesson ID
+    const { userId, text } = req.body;
+
+    if (!text || text.trim() === '') {
+      return res.status(400).json({ success: false, message: 'Comment text cannot be empty.' });
+    }
+
+    const newComment = {
+      lessonId: new ObjectId(id),
+      userId, // Stored as a structural string/ID reference map
+      text: text.trim(),
+      createdAt: new Date()
+    };
+
+    const result = await db.collection('comments').insertOne(newComment);
+
+    res.status(201).json({
+      success: true,
+      message: 'Comment posted successfully! 💬',
+      comment: { _id: result.insertedId, ...newComment }
+    });
+
+  } catch (error) {
+    console.error('Error adding comment:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+// GET /api/lessons/:id/comments
+app.get('/api/lessons/:id/comments', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const comments = await db.collection('comments')
+      .find({ lessonId: new ObjectId(id) })
+      .sort({ createdAt: -1 }) // Newest thoughts run first down the column layout
+      .toArray();
+
+    res.status(200).json({
+      success: true,
+      count: comments.length,
+      data: comments
+    });
+
+  } catch (error) {
+    console.error('Error getting comments:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+// GET /api/admin/stats
+app.get('/api/admin/stats', async (req, res) => {
+  try {
+    const usersCount = await db.collection('user').countDocuments();
+    const publicLessonsCount = await db.collection('lessons').countDocuments({ visibility: 'Public' });
+    const privateLessonsCount = await db.collection('lessons').countDocuments({ visibility: 'Private' });
+    const totalReportsCount = await db.collection('lessonsReports').countDocuments();
+
+    res.status(200).json({
+      success: true,
+      stats: {
+        totalUsers: usersCount,
+        publicLessons: publicLessonsCount,
+        privateLessons: privateLessonsCount,
+        reportedLessons: totalReportsCount
+      }
+    });
+  } catch (error) {
+    console.error('Error compiling dashboard stats:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+// PATCH /api/admin/users/:id/role
+app.patch('/api/admin/users/:id/role', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { role } = req.body; // Expects "user" or "admin"
+
+    if (!['user', 'admin'].includes(role)) {
+      return res.status(400).json({ success: false, message: 'Invalid role configuration value.' });
+    }
+
+    const result = await db.collection('user').updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { role: role } }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ success: false, message: 'User reference row not found.' });
+    }
+
+    res.status(200).json({ success: true, message: `User role changed successfully to ${role}.` });
+  } catch (error) {
+    console.error('Error updating user role:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+// PATCH /api/admin/lessons/:id/feature
+app.patch('/api/admin/lessons/:id/feature', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { isFeatured } = req.body; // Expects true or false
+
+    const result = await db.collection('lessons').updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { isFeatured: Boolean(isFeatured) } }
+    );
+
+    res.status(200).json({ 
+      success: true, 
+      message: isFeatured ? 'Lesson marked as Featured.' : 'Lesson removed from Featured items.' 
+    });
+  } catch (error) {
+    console.error('Error toggling featured state:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+// GET /api/admin/reports
+app.get('/api/admin/reports', async (req, res) => {
+  try {
+    const reports = await db.collection('lessonsReports')
+      .find()
+      .sort({ timestamp: -1 })
+      .toArray();
+
+    res.status(200).json({ success: true, data: reports });
+  } catch (error) {
+    console.error('Error retrieving flagged reports:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+// DELETE /api/admin/lessons/:id
+app.delete('/api/admin/lessons/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const targetObjectId = new ObjectId(id);
+
+    // 1. Wipe the lesson document out entirely from core collection
+    const deleteLessonResult = await db.collection('lessons').deleteOne({ _id: targetObjectId });
+
+    if (deleteLessonResult.deletedCount === 0) {
+      return res.status(404).json({ success: false, message: 'Target lesson could not be found.' });
+    }
+
+    // 2. Clear out any lingering open report tickets attached to that lesson reference ID
+    await db.collection('lessonsReports').deleteMany({ lessonId: targetObjectId });
+
+    res.status(200).json({ success: true, message: 'Lesson wiped and clean up tracking scripts finished.' });
+  } catch (error) {
+    console.error('Content elimination route failure:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+// PATCH /api/users/:id/profile
+app.patch('/api/users/:id/profile', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, photoURL } = req.body; // Only extract fields allowed to be updated
+
+    const updateFields = {};
+    if (name) updateFields.name = name;
+    if (photoURL) updateFields.photoURL = photoURL;
+
+    // Guardrail: Ensure at least one valid field is being modified
+    if (Object.keys(updateFields).length === 0) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Please provide a valid name or photoURL to update.' 
+      });
+    }
+
+    const result = await db.collection('user').updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updateFields }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ success: false, message: 'User not found.' });
+    }
+
+    res.status(200).json({ 
+      success: true, 
+      message: 'Profile updated successfully! ✨' 
+    });
+
+  } catch (error) {
+    console.error('Error updating profile:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+// PATCH /api/lessons/:id
+app.patch('/api/lessons/:id', async (req, res) => {
+  try {
+    const { id } = req.params; // Lesson ID
+    const { requesterId, title, description, category, emotionalTone, visibility, accessLevel } = req.body;
+
+    if (!requesterId) {
+      return res.status(401).json({ success: false, message: 'Unauthorized. Requester identity missing.' });
+    }
+
+    const lessonsCollection = db.collection('lessons');
+    const targetObjectId = new ObjectId(id);
+
+    // 1. Fetch the existing lesson to verify ownership
+    const lesson = await lessonsCollection.findOne({ _id: targetObjectId });
+    if (!lesson) {
+      return res.status(404).json({ success: false, message: 'Lesson not found.' });
+    }
+
+    // 2. Fetch requester role to check if they are an admin
+    const requester = await db.collection('users').findOne({ _id: new ObjectId(requesterId) });
+    const isAdmin = requester && requester.role === 'admin';
+
+    // 3. Authorization Guardrail: Must be owner OR admin
+    if (lesson.creatorId.toString() !== requesterId && !isAdmin) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Forbidden. You do not have permission to edit this lesson.' 
+      });
+    }
+
+    // 4. Handle Free vs Premium changes for the owner
+    let finalAccessLevel = lesson.accessLevel;
+    if (accessLevel) {
+      if (isAdmin || (requester && requester.isPremium)) {
+        finalAccessLevel = accessLevel;
+      } else if (accessLevel === 'Premium') {
+        return res.status(403).json({ 
+          success: false, 
+          message: 'Upgrade to Premium to change access level to Premium.' 
+        });
+      }
+    }
+
+    // 5. Build dynamic update object safely (Filtering out Name and Email changes)
+    const updateData = {};
+    if (title) updateData.title = title;
+    if (description) updateData.description = description;
+    if (category) updateData.category = category;
+    if (emotionalTone) updateData.emotionalTone = emotionalTone;
+    if (visibility) updateData.visibility = visibility; // Public ↔ Private (Draft)
+    updateData.accessLevel = finalAccessLevel;
+    updateData.lastUpdated = new Date();
+
+    await lessonsCollection.updateOne({ _id: targetObjectId }, { $set: updateData });
+
+    res.status(200).json({ 
+      success: true, 
+      message: 'Lesson updated successfully! 📝' 
+    });
+
+  } catch (error) {
+    console.error('Error updating lesson:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
 
 connectToDatabase().then(() => {
   app.listen(port, () => {
