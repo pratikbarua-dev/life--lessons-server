@@ -181,6 +181,52 @@ router.get('/filters', async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+// GET /api/lessons/featured
+router.get('/featured', async (req, res) => {
+  try {
+    const db = getDb();
+    
+    // Fetch featured lessons that are public
+    const lessons = await db.collection('lessons')
+      .aggregate([
+        { $match: { visibility: 'Public', isFeatured: true } },
+        { $sort: { createdAt: -1 } },
+        {
+          $lookup: {
+            from: 'user',
+            let: { creatorIdString: "$creatorId" },
+            pipeline: [
+              {
+                $match: {
+                  $expr: {
+                    $eq: ["$_id", { $toObjectId: "$$creatorIdString" }]
+                  }
+                }
+              }
+            ],
+            as: 'authorInfo'
+          }
+        },
+        {
+          $addFields: {
+            authorName: { $arrayElemAt: ['$authorInfo.name', 0] },
+            authorImage: { $arrayElemAt: ['$authorInfo.image', 0] },
+            authorPhotoURL: { $arrayElemAt: ['$authorInfo.photoURL', 0] }
+          }
+        },
+        {
+          $project: {
+            authorInfo: 0
+          }
+        }
+      ]).toArray();
+
+    res.status(200).json({ success: true, data: lessons });
+  } catch (error) {
+    console.error('Error fetching featured lessons:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
 
 // GET /api/lessons/:id
 router.get('/:id', verifyJWT, async (req, res) => {
