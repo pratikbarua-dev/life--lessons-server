@@ -60,10 +60,12 @@ router.get('/', verifyJWT, async (req, res) => {
       pipeline.push(
         {
           $lookup: {
-            from: 'favorites',          // Look into your 'favorites' collection
-            localField: '_id',          // Take the lesson ID (stored as string or objectId depending on your mapping)
-            foreignField: 'lessonId',   // Match it with the lessonId key in favorites
-            as: 'savedRecords'          // Store matches inside an array named 'savedRecords'
+            from: 'favorites',
+            let: { lessonIdStr: { $toString: '$_id' } },
+            pipeline: [
+              { $match: { $expr: { $eq: ['$lessonId', '$$lessonIdStr'] } } }
+            ],
+            as: 'savedRecords'
           }
         },
         {
@@ -192,8 +194,10 @@ router.get('/most-saved', async (req, res) => {
       {
         $lookup: {
           from: 'favorites',
-          localField: '_id',
-          foreignField: 'lessonId',
+          let: { lessonIdStr: { $toString: '$_id' } },
+          pipeline: [
+            { $match: { $expr: { $eq: ['$lessonId', '$$lessonIdStr'] } } }
+          ],
           as: 'savedRecords'
         }
       },
@@ -372,12 +376,24 @@ router.post('/', verifyJWT, async (req, res) => {
     if (currentUser.isPremium) {
       // Premium users can explicitly choose 'Free' or 'Premium'
       finalizedAccessLevel = accessLevel === 'Premium' ? 'Premium' : 'Free';
-    } else if (accessLevel === 'Premium') {
-      // Free users trying to force a premium entry get blocked
-      return res.status(403).json({
-        success: false,
-        message: 'Upgrade to Premium to create paid lessons.'
-      });
+    } else {
+      if (accessLevel === 'Premium') {
+        // Free users trying to force a premium entry get blocked
+        return res.status(403).json({
+          success: false,
+          message: 'Upgrade to Premium to create paid lessons.'
+        });
+      }
+
+      // Check if free user has reached 3 lessons
+      const lessonCount = await db.collection('lessons').countDocuments({ creatorId: new ObjectId(creatorId) });
+      if (lessonCount >= 3) {
+        return res.status(403).json({
+          success: false,
+          requiresUpgrade: true,
+          message: "Alas, your free journal is full. The pages run out, but your thoughts do not. Upgrade to Premium to unlock an infinite notebook and continue your journey."
+        });
+      }
     }
 
     // 4. Construct complete matching document structure 
