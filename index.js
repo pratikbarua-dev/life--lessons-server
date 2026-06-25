@@ -26,6 +26,10 @@ app.get('/', (req, res) => {
   res.send('Hello World!');
 });
 
+app.get('/ping', (req, res) => {
+  res.send('pong');
+});
+
 // Use routes
 app.use('/api/newsletter', newsletterRoutes);
 app.use('/api/lessons', lessonsRoutes);
