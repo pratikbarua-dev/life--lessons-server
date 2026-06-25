@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const Stripe = require('stripe');
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
+const { getDb } = require('../config/db');
+const { ObjectId } = require('mongodb');
 
 // Middleware to get the logged-in user with their DB profile attached
 const { verifyJWT } = require('../middlewares/verifyJWT');
@@ -41,6 +43,44 @@ router.post('/api/create-checkout-session', verifyJWT, async (req, res) => {
         res.json({ sessionId: session.id, url: session.url });
     } catch (err) {
         console.error("Stripe Checkout Error:", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// GET /api/verify-checkout-session?session_id=...
+router.get('/api/verify-checkout-session', verifyJWT, async (req, res) => {
+    try {
+        const { session_id } = req.query;
+        if (!session_id) {
+            return res.status(400).json({ error: "Missing session_id" });
+        }
+
+        // Retrieve the session from Stripe
+        const session = await stripe.checkout.sessions.retrieve(session_id);
+
+        if (session.payment_status === 'paid') {
+            const userId = session.metadata.userId;
+            
+            // Verify that the user claiming the session matches the logged-in user
+            if (userId !== req.user._id.toString()) {
+                return res.status(403).json({ error: "Unauthorized session claim" });
+            }
+
+            const db = getDb();
+            const usersCollection = db.collection('user');
+
+            // Upgrade user to premium
+            await usersCollection.updateOne(
+                { _id: new ObjectId(userId) },
+                { $set: { isPremium: true } }
+            );
+
+            return res.json({ success: true, isPremium: true });
+        } else {
+            return res.json({ success: false, payment_status: session.payment_status });
+        }
+    } catch (err) {
+        console.error("Stripe Verification Error:", err.message);
         res.status(500).json({ error: err.message });
     }
 });
