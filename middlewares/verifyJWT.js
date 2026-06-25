@@ -42,6 +42,7 @@ const verifyJWT = async (req, res, next) => {
 
       // Attach fresh user data
       req.user = userDoc;
+      req.user.id = userDoc._id.toString();
     } else {
       // Fallback to payload if we can't determine userId
       req.user = payload; 
@@ -82,6 +83,7 @@ const optionalVerifyJWT = async (req, res, next) => {
 
       if (userDoc && !userDoc.banned && !userDoc.isBanned) {
         req.user = userDoc; // Attach fresh DB user if valid
+        req.user.id = userDoc._id.toString();
       }
     } else {
       req.user = payload; // Fallback
@@ -124,6 +126,7 @@ const verifyJWTAllowBanned = async (req, res, next) => {
       }
 
       req.user = userDoc;
+      req.user.id = userDoc._id.toString();
     } else {
       req.user = payload; 
     }
