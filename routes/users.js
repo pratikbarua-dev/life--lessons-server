@@ -4,7 +4,7 @@ const { ObjectId } = require('mongodb');
 const { getDb } = require('../config/db');
 
 // Import the middleware
-const { verifyJWT, verifyJWTAllowBanned } = require('../middlewares/verifyJWT');
+const { verifyJWT, verifyJWTAllowBanned, optionalVerifyJWT } = require('../middlewares/verifyJWT');
 
 
 router.get('/', async (req, res) => {
@@ -254,6 +254,97 @@ router.get('/:userId/stats', verifyJWT, async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Error calculating stats' });
+  }
+});
+
+// GET /api/users/:userId/public-profile
+router.get('/:userId/public-profile', async (req, res) => {
+  try {
+    const db = getDb();
+    const { userId } = req.params;
+    const userObjectId = new ObjectId(userId);
+
+    const user = await db.collection('user').findOne({ _id: userObjectId });
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    // Get total public lessons
+    const publicLessonsCount = await db.collection('lessons').countDocuments({
+      creatorId: userObjectId,
+      visibility: 'Public'
+    });
+
+    res.json({
+      success: true,
+      data: {
+        id: user._id,
+        name: user.name,
+        image: user.image,
+        photoURL: user.photoURL,
+        createdAt: user.createdAt,
+        totalPublicLessons: publicLessonsCount
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching public profile:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+// GET /api/users/:userId/public-lessons
+router.get('/:userId/public-lessons', optionalVerifyJWT, async (req, res) => {
+  try {
+    const db = getDb();
+    const { userId } = req.params;
+    const userObjectId = new ObjectId(userId);
+
+    let isPremiumUser = false;
+    let isAdmin = false;
+    if (req.user) {
+      const viewerId = req.user.id || req.user.sub;
+      const dbUser = await db.collection('user').findOne({ _id: new ObjectId(viewerId) });
+      if (dbUser) {
+        isPremiumUser = dbUser.isPremium;
+        isAdmin = dbUser.role === 'admin';
+      }
+    }
+    
+    // Viewer ID for checking if viewer is the creator
+    const viewerIdStr = req.user ? (req.user.id || req.user.sub) : null;
+
+    const lessons = await db.collection('lessons').aggregate([
+      { $match: { creatorId: userObjectId, visibility: 'Public' } },
+      { $sort: { _id: -1 } },
+      {
+        $addFields: {
+          description: {
+            $cond: {
+              if: {
+                $and: [
+                  { $eq: ["$accessLevel", "Premium"] },
+                  { $eq: [isPremiumUser, false] },
+                  { $eq: [isAdmin, false] },
+                  { $ne: [{ $toString: "$creatorId" }, viewerIdStr] }
+                ]
+              },
+              then: { 
+                $concat: [
+                  { $substrCP: ["$description", 0, 100] }, 
+                  "... [Premium Content Locked 🔒]"
+                ] 
+              },
+              else: "$description"
+            }
+          }
+        }
+      }
+    ]).toArray();
+
+    res.json({ success: true, data: lessons });
+  } catch (error) {
+    console.error('Error fetching public lessons:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
 
