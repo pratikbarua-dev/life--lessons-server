@@ -83,6 +83,50 @@ router.post('/appeal', verifyJWTAllowBanned, async (req, res) => {
   }
 });
 
+// GET /api/users/top-contributors
+router.get('/top-contributors', async (req, res) => {
+  try {
+    const db = getDb();
+    const topContributors = await db.collection('lessons').aggregate([
+      { $match: { visibility: 'Public' } },
+      { $group: { _id: "$creatorId", lessonCount: { $sum: 1 } } },
+      { $sort: { lessonCount: -1 } },
+      { $limit: 10 },
+      {
+        $lookup: {
+          from: 'user',
+          let: { creatorIdString: "$_id" },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $eq: ["$_id", { $toObjectId: "$$creatorIdString" }]
+                }
+              }
+            }
+          ],
+          as: 'userDetails'
+        }
+      },
+      { $unwind: "$userDetails" },
+      {
+        $project: {
+          _id: 1,
+          lessonCount: 1,
+          name: "$userDetails.name",
+          image: "$userDetails.image",
+          photoURL: "$userDetails.photoURL"
+        }
+      }
+    ]).toArray();
+
+    res.json({ success: true, data: topContributors });
+  } catch (error) {
+    console.error('Error fetching top contributors:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
 //My Lessons Route
 router.get('/:userId/lessons', verifyJWT, async (req, res) => {
   try {

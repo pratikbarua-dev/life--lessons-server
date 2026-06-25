@@ -181,6 +181,66 @@ router.get('/filters', async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
+// GET /api/lessons/most-saved
+router.get('/most-saved', async (req, res) => {
+  try {
+    const db = getDb();
+    
+    const lessons = await db.collection('lessons').aggregate([
+      { $match: { visibility: 'Public' } },
+      {
+        $lookup: {
+          from: 'favorites',
+          localField: '_id',
+          foreignField: 'lessonId',
+          as: 'savedRecords'
+        }
+      },
+      {
+        $addFields: {
+          savedCount: { $size: '$savedRecords' }
+        }
+      },
+      { $sort: { savedCount: -1 } },
+      { $limit: 10 },
+      {
+        $lookup: {
+          from: 'user',
+          let: { creatorIdString: "$creatorId" },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $eq: ["$_id", { $toObjectId: "$$creatorIdString" }]
+                }
+              }
+            }
+          ],
+          as: 'authorInfo'
+        }
+      },
+      {
+        $addFields: {
+          authorName: { $arrayElemAt: ['$authorInfo.name', 0] },
+          authorImage: { $arrayElemAt: ['$authorInfo.image', 0] },
+          authorPhotoURL: { $arrayElemAt: ['$authorInfo.photoURL', 0] }
+        }
+      },
+      {
+        $project: {
+          authorInfo: 0,
+          savedRecords: 0
+        }
+      }
+    ]).toArray();
+
+    res.status(200).json({ success: true, data: lessons });
+  } catch (error) {
+    console.error('Error fetching most saved lessons:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
 // GET /api/lessons/featured
 router.get('/featured', async (req, res) => {
   try {
