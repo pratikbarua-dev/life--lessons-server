@@ -29,6 +29,74 @@ router.get('/stats', verifyJWT, verifyAdmin, async (req, res) => {
   }
 });
 
+// GET /api/admin/analytics
+router.get('/analytics', verifyJWT, verifyAdmin, async (req, res) => {
+  try {
+    const db = getDb();
+    
+    // We want data for the past 30 days
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    // Aggregate User Growth
+    const userGrowth = await db.collection('user').aggregate([
+      { $match: { createdAt: { $gte: thirtyDaysAgo } } },
+      { 
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          users: { $sum: 1 }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]).toArray();
+
+    // Aggregate Asset (Lesson) Generation
+    const assetGrowth = await db.collection('lessons').aggregate([
+      { $match: { createdAt: { $gte: thirtyDaysAgo } } },
+      { 
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          assets: { $sum: 1 }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]).toArray();
+
+    // Merge the two arrays into a single timeseries array filling in missing dates
+    const analyticsMap = new Map();
+    
+    // Initialize map with the last 30 days
+    for (let i = 29; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const dateStr = d.toISOString().split('T')[0];
+      // Format as "MMM DD" for frontend display
+      const displayDate = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      analyticsMap.set(dateStr, { date: displayDate, users: 0, assets: 0, fullDate: dateStr });
+    }
+
+    // Populate with real data
+    userGrowth.forEach(item => {
+      if (analyticsMap.has(item._id)) {
+        analyticsMap.get(item._id).users = item.users;
+      }
+    });
+
+    assetGrowth.forEach(item => {
+      if (analyticsMap.has(item._id)) {
+        analyticsMap.get(item._id).assets = item.assets;
+      }
+    });
+
+    const timeseries = Array.from(analyticsMap.values());
+
+    res.status(200).json({ success: true, data: timeseries });
+  } catch (error) {
+    console.error('Error compiling analytics:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
 // PATCH /api/admin/users/:id/role
 router.patch('/users/:id/role', verifyJWT, verifyAdmin, async (req, res) => {
   try {
