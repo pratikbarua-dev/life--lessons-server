@@ -196,6 +196,20 @@ router.get('/:userId/favorites', verifyJWT, async (req, res) => {
         }
       },
       { $unwind: '$lessonDetails' }, // Flatten lookup array results directly inside response row
+      {
+        $lookup: {
+          from: 'user',
+          localField: 'lessonDetails.creatorId',
+          foreignField: '_id',
+          as: 'lessonDetails.creator'
+        }
+      },
+      {
+        $unwind: {
+          path: '$lessonDetails.creator',
+          preserveNullAndEmptyArrays: true
+        }
+      },
       { $sort: { savedAt: -1 } }     // Show recently bookmarked items first
     ]).toArray();
 
